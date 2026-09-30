@@ -18,6 +18,82 @@ from dataset import BilingualDataset, causal_mask
 from model import build_transformer
 from config import get_weights_file_path, get_config
 
+
+def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+    sos_idx = tokenizer_tgt.token_to_ids("[SOS]")
+    eos_idx = tokenizer_tgt.token_to_ids("[EOS]")
+
+    # precompute encoder output and resue it for every token gotten from decoder
+    encoder_output = model.encode(source, source_mask)
+
+    # Initialise the decoder input with SOS token
+    decoder_input = torch.empty(1,1).fill_(sos_idx).type_as(source).to(device)
+    while True:
+        if decoder_input.size(1) == max_len:
+            break
+
+        # build mask for target (decoder input)
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(source).to(device)
+
+        # calculate output of decoder
+        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
+
+        # get next token
+        prob = model.project(out[:, -1])
+
+        # select the token with the max probability (greedy search)
+        _, next_word= torch.max(prob, dim=1)
+
+        decoder_input = torch.cat([decoder_input, torch.empty(1,1).type_as(source).fill_(next_word.item()).to(device)], dim=1)
+
+        if next_word == eos_idx:
+            break
+
+    return decoder_input.squeeze(0)
+
+
+def run_validation(
+    model, 
+    validation_ds, 
+    tokenizer_src, 
+    tokenizer_tgt, 
+    max_len,
+    device,
+    print_msg, 
+    global_state,
+    writer, 
+    run_examples=2
+):
+    model.eval()
+    count = 0
+
+    # size of the control window
+    console_width = 80
+
+    with torch.no_grad():
+        for batch in validation_ds:
+            count += 1
+            encoder_input = batch['encoder_input'].to(device)
+            encoder_mask = batch['encoder_mask'].to(device)
+
+            assert encoder_input.size(0) == 1, "batch must be 1 for validation"
+
+            model_output = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+
+            source_text = batch['src_text'][0]
+            target_text = batch['tgt_text'][0]
+            model_out_text = tokenizer_tgt.decode(model_output.detach().cpu().numpy())
+
+            # print to console 
+            print_msg("-"*console_width)
+            print_msg(f"SOURCE: {source_text}")
+            print_msg(f"TARGET: {target_text}")
+            print_msg(f"PREDICTED: {model_out_text}")
+
+            if count == run_examples:
+                break
+    
+
 def get_all_sentence(ds, lang):
     for item in ds:
         yield item['translation'][lang]
@@ -143,6 +219,8 @@ def train_model(config):
         batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
 
         for batch in batch_iterator:
+            model.train()
+
             encoder_input = batch['encoder_input'].to(device) # (batch, seq_len)
             decoder_input = batch['decoder_input'].to(device) # (batch, seq_len)
             encoder_mask = batch['encoder_mask'].to(device) # (batch, 1, 1, seq_len)
@@ -174,9 +252,21 @@ def train_model(config):
             optimizer.step()
             optimizer.zero_grad()
 
+
             global_step += 1
 
 
+        run_validation(
+            model, 
+            val_dataloader, 
+            tokenizer_src, 
+            tokenizer_tgt, 
+            config['seq_len'], 
+            device, 
+            lambda msg: batch_iterator.write(msg),
+            global_step,
+            writer
+        )
         # save the model at end of each epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
         torch.save({

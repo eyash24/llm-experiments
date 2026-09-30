@@ -11,3 +11,7 @@ wheels/
 
 
 .vscode/
+
+# Comment out for production
+runs/*
+weights/
