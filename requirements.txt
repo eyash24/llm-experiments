@@ -1,2 +1,7 @@
 torch
 torchvision
+notebook
+matplotlib
+pandas
+numpy
+transformers
