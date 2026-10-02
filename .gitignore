@@ -15,3 +15,5 @@ wheels/
 # Comment out for production
 runs/*
 weights/
+
+llama 3/
