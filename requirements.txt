@@ -5,3 +5,7 @@ matplotlib
 pandas
 numpy
 transformers
+datasets
+accelerate
+bitsandbytes
+wandb
